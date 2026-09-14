@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any, Dict, Union
 
 import torch
+import mlflow
 from loguru import logger
 
 from .config import Config
@@ -12,6 +13,7 @@ from .engine.misc import dist_utils
 from .engine.optim.lr_scheduler import FlatCosineLRScheduler
 from .engine.solver import TASKS
 from .engine.solver.det_engine import evaluate, train_one_epoch
+from .mlflow_utils import MLflowWriter
 
 
 class Trainer:
@@ -401,113 +403,118 @@ class Trainer:
             )
             self_lr_scheduler = True
 
-        for epoch in range(start_epoch, num_epochs):
-            logger.info(f"Epoch {epoch}/{num_epochs}")
-            # Set epoch for data loader
-            if hasattr(self.train_dataloader, "set_epoch"):
-                self.train_dataloader.set_epoch(epoch)
+        # MLFLOW WORKAROUND
+        mlflow.set_experiment("mbg_deim_v1_training")
 
-            # Train for one epoch
-            train_stats = train_one_epoch(
-                self_lr_scheduler,
-                self.lr_scheduler,
-                self.model,
-                self.criterion,
-                self.train_dataloader,
-                self.optimizer,
-                self.device,
-                epoch,
-                max_norm=clip_max_norm,
-                print_freq=print_freq,
-                ema=self.ema,
-                scaler=self.scaler,
-                lr_warmup_scheduler=self.lr_warmup_scheduler,
-                writer=self.solver.writer if hasattr(self.solver, "writer") else None,
-            )
+        with mlflow.start_run() as run:
+            for epoch in range(start_epoch, num_epochs):
+                logger.info(f"Epoch {epoch}/{num_epochs}")
+                # Set epoch for data loader
+                if hasattr(self.train_dataloader, "set_epoch"):
+                    self.train_dataloader.set_epoch(epoch)
 
-            # Update learning rate scheduler
-            if not self_lr_scheduler:
+                # Train for one epoch
+                train_stats = train_one_epoch(
+                    self_lr_scheduler,
+                    self.lr_scheduler,
+                    self.model,
+                    self.criterion,
+                    self.train_dataloader,
+                    self.optimizer,
+                    self.device,
+                    epoch,
+                    max_norm=clip_max_norm,
+                    print_freq=print_freq,
+                    ema=self.ema,
+                    scaler=self.scaler,
+                    lr_warmup_scheduler=self.lr_warmup_scheduler,
+                    writer=self.solver.writer if hasattr(self.solver, "writer") else None,
+                )
+
+                # Update learning rate scheduler
+                if not self_lr_scheduler:
+                    if (
+                        self.lr_warmup_scheduler is None
+                        or self.lr_warmup_scheduler.finished()
+                    ):
+                        self.lr_scheduler.step()
+
+                self.last_epoch += 1
+
+                # Save checkpoint
                 if (
-                    self.lr_warmup_scheduler is None
-                    or self.lr_warmup_scheduler.finished()
+                    self.output_dir
+                    and (epoch + 1) % checkpoint_freq == 0
+                    and not save_best_only
                 ):
-                    self.lr_scheduler.step()
+                    checkpoint_path = self.output_dir / f"checkpoint{epoch:04}.pth"
+                    self._save_checkpoint(epoch, train_stats, checkpoint_path)
 
-            self.last_epoch += 1
+                # Evaluate
+                # Calculate global step for tensorboard logging
+                global_step = (epoch + 1) * len(self.train_dataloader)
+                #writer = self.solver.writer if hasattr(self.solver, "writer") else None
+                writer = MLflowWriter
 
-            # Save checkpoint
-            if (
-                self.output_dir
-                and (epoch + 1) % checkpoint_freq == 0
-                and not save_best_only
-            ):
-                checkpoint_path = self.output_dir / f"checkpoint{epoch:04}.pth"
-                self._save_checkpoint(epoch, train_stats, checkpoint_path)
+                # Pass writer and global_step to evaluate
+                eval_stats, _ = evaluate(
+                    self.ema.module if self.ema else self.model,
+                    self.criterion,
+                    self.postprocessor,
+                    self.val_dataloader,
+                    self.evaluator,
+                    self.device,
+                    writer=writer,
+                    global_step=global_step,
+                )
 
-            # Evaluate
-            # Calculate global step for tensorboard logging
-            global_step = (epoch + 1) * len(self.train_dataloader)
-            writer = self.solver.writer if hasattr(self.solver, "writer") else None
-
-            # Pass writer and global_step to evaluate
-            eval_stats, _ = evaluate(
-                self.ema.module if self.ema else self.model,
-                self.criterion,
-                self.postprocessor,
-                self.val_dataloader,
-                self.evaluator,
-                self.device,
-                writer=writer,
-                global_step=global_step,
-            )
-
-            # Update best stats
-            for k in eval_stats:
-                if (
-                    k == "coco_eval_bbox"
-                    and isinstance(eval_stats[k], list)
-                    and len(eval_stats[k]) > 0
-                ):
-                    # Handle coco_eval_bbox specially
-                    map_value = eval_stats[k][0]  # Take the first value as mAP
-                    if k in best_stats:
-                        if map_value > best_stats[k]:
+                # Update best stats
+                for k in eval_stats:
+                    if (
+                        k == "coco_eval_bbox"
+                        and isinstance(eval_stats[k], list)
+                        and len(eval_stats[k]) > 0
+                    ):
+                        # Handle coco_eval_bbox specially
+                        map_value = eval_stats[k][0]  # Take the first value as mAP
+                        if k in best_stats:
+                            if map_value > best_stats[k]:
+                                best_stats["epoch"] = epoch
+                                best_stats[k] = map_value
+                        else:
                             best_stats["epoch"] = epoch
                             best_stats[k] = map_value
-                    else:
-                        best_stats["epoch"] = epoch
-                        best_stats[k] = map_value
 
-                    if best_stats[k] > top1:
-                        top1 = best_stats[k]
-                        if self.output_dir:
-                            self._save_checkpoint(
-                                epoch, eval_stats, self.output_dir / "best.pth"
-                            )
-                            logger.info(
-                                f"🏆 NEW BEST MODEL! Epoch {epoch} / mAP: {best_stats[k]}"
-                            )
-                elif k != "coco_eval_bbox":
-                    # Handle other metrics
-                    if k in best_stats:
-                        if eval_stats[k] > best_stats[k]:
+                        if best_stats[k] > top1:
+                            top1 = best_stats[k]
+                            if self.output_dir:
+                                self._save_checkpoint(
+                                    epoch, eval_stats, self.output_dir / "best.pth"
+                                )
+                                logger.info(
+                                    f"🏆 NEW BEST MODEL! Epoch {epoch} / mAP: {best_stats[k]}"
+                                )
+                    elif k != "coco_eval_bbox":
+                        # Handle other metrics
+                        if k in best_stats:
+                            if eval_stats[k] > best_stats[k]:
+                                best_stats["epoch"] = epoch
+                                best_stats[k] = eval_stats[k]
+                        else:
                             best_stats["epoch"] = epoch
                             best_stats[k] = eval_stats[k]
-                    else:
-                        best_stats["epoch"] = epoch
-                        best_stats[k] = eval_stats[k]
 
-                    if k != "epoch" and best_stats[k] > top1:
-                        top1 = best_stats[k]
-                        if self.output_dir:
-                            self._save_checkpoint(
-                                epoch, eval_stats, self.output_dir / "best.pth"
-                            )
-                            logger.info(
-                                f"🏆 NEW BEST MODEL! Epoch {epoch} / mAP: {best_stats[k]}"
-                            )
+                        if k != "epoch" and best_stats[k] > top1:
+                            top1 = best_stats[k]
+                            if self.output_dir:
+                                self._save_checkpoint(
+                                    epoch, eval_stats, self.output_dir / "best.pth"
+                                )
+                                logger.info(
+                                    f"🏆 NEW BEST MODEL! Epoch {epoch} / mAP: {best_stats[k]}"
+                                )
 
-            logger.info(f"✅ Current best stats: {best_stats}")
+                logger.info(f"✅ Current best stats: {best_stats}")
 
         # Save final checkpoint if not save_best_only
         if self.output_dir and not save_best_only:
