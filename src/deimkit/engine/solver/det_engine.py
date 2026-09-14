@@ -44,7 +44,7 @@ def train_one_epoch(self_lr_scheduler, lr_scheduler, model: torch.nn.Module, cri
     lr_warmup_scheduler :Warmup = kwargs.get('lr_warmup_scheduler', None)
 
     cur_iters = epoch * len(data_loader)
-    
+
     # Add progress bar
     pbar = tqdm(total=len(data_loader), desc=f'Epoch {epoch}', leave=True)
 
@@ -147,7 +147,7 @@ def create_pr_curve_plot(
 ) -> plt.Figure:
     """
     Create a precision-recall curve plot.
-    
+
     Args:
         precisions: Array of precision values for each curve, shape (num_curves, num_points)
         recalls: Array of recall values, shape (num_points,)
@@ -155,15 +155,15 @@ def create_pr_curve_plot(
         colors: List of colors for each curve
         title: Plot title
         figsize: Figure size in inches
-    
+
     Returns:
         matplotlib.figure.Figure: The created figure
     """
     fig, ax = plt.subplots(figsize=figsize)
-    
+
     for precision, label, color in zip(precisions, labels, colors):
         ax.plot(recalls, precision, color=color, label=label, linewidth=2)
-    
+
     ax.set_xlabel('Recall', fontsize=12)
     ax.set_ylabel('Precision', fontsize=12)
     ax.set_title(title, fontsize=14)
@@ -171,7 +171,7 @@ def create_pr_curve_plot(
     ax.legend(loc='lower left')
     ax.set_xlim([0, 1])
     ax.set_ylim([0, 1])
-    
+
     return fig
 
 def get_precision_recall_data(
@@ -181,12 +181,12 @@ def get_precision_recall_data(
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
     Extract precision-recall data from COCO evaluation results.
-    
+
     Args:
         eval_result: COCO evaluation result object
         iou_thresh: IoU threshold value. If None, average over all IoU thresholds
         area_idx: Area index (0: all, 1: small, 2: medium, 3: large). If None, use all areas
-    
+
     Returns:
         Tuple of (precision array, recall array)
     """
@@ -199,14 +199,14 @@ def get_precision_recall_data(
     else:
         # Average over IoU thresholds and categories
         precision = eval_result.eval['precision'][:, :, :, 0, -1].mean(axis=2).mean(axis=0)
-    
+
     if area_idx is not None:
         precision = eval_result.eval['precision'][:, :, :, area_idx, -1].mean(axis=2).mean(axis=0)
-    
+
     # Ensure precision has the same shape as recalls
     if precision.shape != recalls.shape:
         precision = np.full_like(recalls, np.nan)
-    
+
     return precision, recalls
 
 def log_pr_curves(
@@ -223,30 +223,30 @@ def log_pr_curves(
 
     iou_thresholds = [0.5, 0.75]
     area_labels = ['all', 'small', 'medium', 'large']
-    
+
     for iou_type in iou_types:
         eval_result = coco_evaluator.coco_eval[iou_type]
         recalls = eval_result.params.recThrs
-        
+
         # IoU threshold based curves
         precisions = []
         labels = []
         colors = ['b', 'r', 'g']  # Colors for IoU=0.5, 0.75, and mean
-        
+
         # Get PR curves for specific IoU thresholds
         for iou_thresh in iou_thresholds:
             precision, _ = get_precision_recall_data(eval_result, iou_thresh=iou_thresh)
             precisions.append(precision)
             labels.append(f'IoU={iou_thresh:.2f}')
-        
+
         # Add mean PR curve (IoU=0.50:0.95)
         precision, _ = get_precision_recall_data(eval_result)
         precisions.append(precision)
         labels.append('IoU=0.50:0.95')
-        
+
         # Stack precisions into a 2D array
         precisions = np.stack(precisions)
-        
+
         # Create and log IoU threshold based plot
         fig = create_pr_curve_plot(
             precisions,
@@ -257,19 +257,19 @@ def log_pr_curves(
         )
         writer.add_figure(f'metrics-PR/{iou_type}/precision_recall_curve', fig, global_step)
         plt.close(fig)
-        
+
         # Area based curves
         precisions = []
         colors = ['g', 'b', 'r', 'c']
-        
+
         # Get PR curves for different areas
         for area_idx in range(4):
             precision, _ = get_precision_recall_data(eval_result, area_idx=area_idx)
             precisions.append(precision)
-        
+
         # Stack precisions into a 2D array
         precisions = np.stack(precisions)
-        
+
         # Create and log area based plot
         fig = create_pr_curve_plot(
             precisions,
@@ -284,22 +284,22 @@ def log_pr_curves(
 def calculate_f1_score(precision: float, recall: float) -> float:
     """
     Calculate F1 score from precision and recall values.
-    
+
     Args:
         precision: Precision value (AP)
         recall: Recall value (AR)
-    
+
     Returns:
         float: F1 score if valid, float('nan') if invalid
     """
     if precision <= 0 or recall <= 0:
         return float('nan')
-    
+
     return 2 * (precision * recall) / (precision + recall)
 
 @torch.no_grad()
-def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, data_loader, 
-            coco_evaluator: CocoEvaluator, device, writer: Optional[SummaryWriter] = None, 
+def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, data_loader,
+            coco_evaluator: CocoEvaluator, device, writer: Optional[SummaryWriter] = None,
             global_step: Optional[int] = None):
     model.eval()
     criterion.eval()
@@ -342,32 +342,58 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
     if coco_evaluator is not None:
         coco_evaluator.accumulate()
         coco_evaluator.summarize()
-        
+
         # Log PR curves
-        log_pr_curves(coco_evaluator, writer, global_step, iou_types)
+        #log_pr_curves(coco_evaluator, writer, global_step, iou_types)
 
     stats = {}
     if coco_evaluator is not None:
         if 'bbox' in iou_types:
             bbox_stats = coco_evaluator.coco_eval['bbox'].stats
+            bbox_stats_extended = coco_evaluator.coco_eval['bbox'].extended_metrics
             stats['coco_eval_bbox'] = bbox_stats.tolist()
 
             # Add top-level metrics for quick overview
             if writer is not None and dist_utils.is_main_process() and global_step is not None:
                 # Primary metrics at top level
-                writer.add_scalar('top-level-metrics/mAP_50_95', bbox_stats[0], global_step)  
-                
+                writer.add_scalar('top-level-metrics/mAP_50_95', bbox_stats[0], global_step)
+
                 # Top-level recall metrics
-                writer.add_scalar('top-level-metrics/mAR_50_95', bbox_stats[8], global_step)     
-                
+                writer.add_scalar('top-level-metrics/mAR_50_95', bbox_stats[8], global_step)
+
                 # Calculate and log F1 scores at top level
                 f1_50_95 = calculate_f1_score(bbox_stats[0], bbox_stats[8])
-                
+
                 if f1_50_95 is not None:
                     writer.add_scalar('top-level-metrics/F1_50_95', f1_50_95, global_step)
 
             # Continue with existing detailed metrics logging
             if writer is not None and dist_utils.is_main_process() and global_step is not None:
+                # Extended metrics
+                for class_metrics in bbox_stats_extended['class_map']:
+                    class_name = class_metrics['class']
+                    if class_name == 'Component-displacement-&-part-missing':
+                        class_name = 'Component-displacement-and-part-missing'
+
+                    # Calculate F1 score safely to avoid DivisionByZero errors
+                    p = class_metrics.get('precision', 0.0)
+                    r = class_metrics.get('recall', 0.0)
+                    f1_score = (2 * p * r / (p + r)) if (p + r) > 0 else 0.0
+
+                    # Create a unified dictionary of metrics to log
+                    metrics_to_log = {**class_metrics, 'f1_score': f1_score}
+
+                    for metric_name, value in metrics_to_log.items():
+                        if metric_name == 'class':
+                            continue
+
+                        if metric_name == 'map@50:95':
+                            metric_name = 'map50:95'
+                        if metric_name == 'map@50':
+                            metric_name = 'map50'
+                        tag = f"{class_name}_{metric_name}"
+                        writer.add_scalar(tag, value, global_step)
+
                 # Average Precision metrics (indices 0-5)
                 writer.add_scalar('metrics-AP/IoU_0.50-0.95_area_all_maxDets_100', bbox_stats[0], global_step)
                 writer.add_scalar('metrics-AP/IoU_0.50_area_all_maxDets_100', bbox_stats[1], global_step)
@@ -413,11 +439,11 @@ def evaluate(model: torch.nn.Module, criterion: torch.nn.Module, postprocessor, 
                 f1_large = calculate_f1_score(bbox_stats[5], bbox_stats[11])
                 if f1_large is not None:
                     writer.add_scalar('metrics-F1/IoU_0.50-0.95_area_large_maxDets_100', f1_large, global_step)
-            
+
             if 'segm' in iou_types:
                 segm_stats = coco_evaluator.coco_eval['segm'].stats
                 stats['coco_eval_segm'] = segm_stats.tolist()
-                
+
                 # Average Precision metrics (indices 0-5)
                 writer.add_scalar('metrics-AP/IoU_0.50-0.95_area_all_maxDets_100', segm_stats[0], global_step)
                 writer.add_scalar('metrics-AP/IoU_0.50_area_all_maxDets_100', segm_stats[1], global_step)
