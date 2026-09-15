@@ -404,7 +404,7 @@ class Trainer:
             self_lr_scheduler = True
 
         # MLFLOW WORKAROUND
-        mlflow.set_experiment("mbg_deim_v1_training")
+        mlflow.set_experiment("AICIDA-4690-mbg-revised-deim-large-colab")
 
         with mlflow.start_run() as run:
             for epoch in range(start_epoch, num_epochs):
