@@ -402,9 +402,9 @@ class Predictor:
         class_names = None
         if self.class_names is not None:
             class_names = [
-                self.class_names[int(label)]
-                if 0 <= int(label) < len(self.class_names)
-                else f"unknown_{int(label)}"
+                self.class_names[int(label.item() if hasattr(label, "item") else label[0])]
+                if 0 <= int(label.item() if hasattr(label, "item") else label[0]) < len(self.class_names)
+                else f"unknown_{int(label.item() if hasattr(label, 'item') else label[0])}"
                 for label in filtered_labels
             ]
 
@@ -546,9 +546,9 @@ class Predictor:
                     class_names = None
                     if self.class_names is not None:
                         class_names = [
-                            self.class_names[int(label)]
-                            if 0 <= int(label) < len(self.class_names)
-                            else f"unknown_{int(label)}"
+                            self.class_names[int(label.item() if hasattr(label, "item") else label[0])]
+                            if 0 <= int(label.item() if hasattr(label, "item") else label[0]) < len(self.class_names)
+                            else f"unknown_{int(label.item() if hasattr(label, 'item') else label[0])}"
                             for label in filtered_labels
                         ]
 
