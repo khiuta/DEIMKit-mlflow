@@ -221,7 +221,7 @@ def draw_on_image(
             raise ValueError(f"Unexpected box format with {len(box)} values")
 
         # Get class name and color
-        label_idx = int(label)
+        label_idx = int(label.item() if hasattr(label, "item") else label[0])
         class_name = (
             class_names[label_idx]
             if label_idx < len(class_names)
